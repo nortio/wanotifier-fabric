@@ -1,12 +1,10 @@
 package io.github.nortio;
 
-import com.mojang.authlib.minecraft.client.MinecraftClient;
 import net.fabricmc.api.ModInitializer;
 
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.network.message.MessageType;
 import net.minecraft.network.message.SignedMessage;
@@ -27,11 +25,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Properties;
-import java.util.concurrent.CompletableFuture;
 
 public class WaNotifierFabric implements ModInitializer {
     public static final Logger LOGGER = LoggerFactory.getLogger("wanotifier-fabric");
@@ -42,11 +38,19 @@ public class WaNotifierFabric implements ModInitializer {
     private static String token = "1234";
     private static String url = "http://localhost:8000/";
 
+    private static final class EventType {
+        public static final String JOIN = "join";
+        public static final String QUIT = "quit";
+        public static final String CHAT = "chat";
+    }
+
     private void broadcast(String message, MinecraftServer server) {
         server.getPlayerManager().broadcast(Text.literal(message), false);
     }
 
-    private void doRequest(URI uri, MinecraftServer server) {
+    private void doRequest(String type, String params, MinecraftServer server) {
+        URI uri = URI.create(url + type + "?token=" + token + params);
+
         HttpRequest req = HttpRequest.newBuilder(uri)
                 .GET()
                 .timeout(Duration.ofSeconds(5))
@@ -98,7 +102,7 @@ public class WaNotifierFabric implements ModInitializer {
             props.setProperty("token", token);
             props.setProperty("url", url);
             try {
-                props.store(new FileWriter(configPath), "URL is where wanotifier service is running, token is self-explanatory");
+                props.store(new FileWriter(configPath), "URL is where wanotifier service is running (don't forget trailing slash!!), token is self-explanatory");
             } catch (IOException ex) {
                 LOGGER.error("Could not create properties file. Exception: {}", ex.toString());
             }
@@ -106,20 +110,20 @@ public class WaNotifierFabric implements ModInitializer {
 
         ServerPlayConnectionEvents.JOIN.register((ServerPlayNetworkHandler handler, PacketSender sender, MinecraftServer server) -> {
             ServerPlayerEntity player = handler.player;
-            URI uri = URI.create(url + "join?token=" + token + "&joined=" + player.getName().getLiteralString());
-            doRequest(uri, server);
+            String params = "&joined=" + player.getName().getLiteralString();
+            doRequest(EventType.JOIN, params, server);
         });
 
         ServerPlayConnectionEvents.DISCONNECT.register((ServerPlayNetworkHandler handler, MinecraftServer server) -> {
             ServerPlayerEntity player = handler.player;
-            URI uri = URI.create(url + "quit?token=" + token + "&duration=sconosciuto" + "&joined=" + player.getName().getLiteralString());
-            doRequest(uri, server);
+            String params = "&duration=sconosciuto" + "&joined=" + player.getName().getLiteralString();
+            doRequest(EventType.QUIT, params, server);
         });
 
         ServerMessageEvents.CHAT_MESSAGE.register((SignedMessage message, ServerPlayerEntity sender, MessageType.Parameters params)->{
             String encoded_message = URLEncoder.encode(Objects.requireNonNull(message.getContent().getLiteralString()), StandardCharsets.UTF_8);
-            URI uri = URI.create(url+"chat?token="+token+"&message="+ encoded_message + "&author=" + sender.getName().getLiteralString());
-            doRequest(uri, sender.server);
+            String param = "&message="+ encoded_message + "&author=" + sender.getName().getLiteralString();
+            doRequest(EventType.CHAT, param, sender.server);
         });
     }
 }
