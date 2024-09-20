@@ -1,5 +1,6 @@
 package io.github.nortio;
 
+import com.google.gson.Gson;
 import net.fabricmc.api.ModInitializer;
 
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
@@ -19,13 +20,13 @@ import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.Properties;
 
@@ -35,8 +36,11 @@ public class WaNotifierFabric implements ModInitializer {
     private static final Properties props = new Properties();
     public static final String KO_WHATSAPP_BRIDGE_ERROR = "KO: Whatsapp bridge error";
     public static final String WA_BRIDGE_TIMEOUT = "WA Bridge timeout";
+    public static final String WEBHOOK_TIMEOUT = "Webhook timeout";
+
     private static String token = "1234";
     private static String url = "http://localhost:8000/";
+    private static String webhook = "";
 
     private static final class EventType {
         public static final String JOIN = "join";
@@ -48,8 +52,8 @@ public class WaNotifierFabric implements ModInitializer {
         server.getPlayerManager().broadcast(Text.literal(message), false);
     }
 
-    private void doRequest(String type, String params, MinecraftServer server) {
-        URI uri = URI.create(url + type + "?token=" + token + params);
+    private void doRequest(WaNotifierEvent event, MinecraftServer server) {
+        URI uri = URI.create(url + event.getType() + "?token=" + token + event.buildParams());
 
         HttpRequest req = HttpRequest.newBuilder(uri)
                 .GET()
@@ -67,13 +71,37 @@ public class WaNotifierFabric implements ModInitializer {
                         broadcast(KO_WHATSAPP_BRIDGE_ERROR, server);
                     }
                 })
-                .exceptionally((s)->{
-                    if(s instanceof HttpTimeoutException) {
+                .exceptionally((s) -> {
+                    if (s instanceof HttpTimeoutException) {
                         LOGGER.error(WA_BRIDGE_TIMEOUT);
                         broadcast(WA_BRIDGE_TIMEOUT, server);
-                    } else  {
+                    } else {
                         LOGGER.error("WA Bridge unknown error: {}", s.getMessage());
-                        broadcast("WA Bridge unknown error: "+ s.getMessage() , server);
+                        broadcast("WA Bridge unknown error: " + s.getMessage(), server);
+                    }
+                    return null;
+                });
+    }
+
+    private void doWebhook(WaNotifierEvent event) {
+        URI uri = URI.create(webhook);
+
+        Gson gson = new Gson();
+        LinkedHashMap<String, String> payload = new LinkedHashMap<>();
+        payload.put("content", event.getTextMessage());
+
+        String json = gson.toJson(payload);
+        HttpRequest req = HttpRequest.newBuilder(uri)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
+                .timeout(Duration.ofSeconds(5))
+                .build();
+        client.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .exceptionally((s)->{
+                    if(s instanceof HttpTimeoutException) {
+                        LOGGER.error(WEBHOOK_TIMEOUT);
+                    } else  {
+                        LOGGER.error("Webhook unknown error: {}", s.getMessage());
                     }
                     return null;
                 });
@@ -98,9 +126,17 @@ public class WaNotifierFabric implements ModInitializer {
                 LOGGER.error("No url for wanotifier service provided in wanotifier.properties!!");
             }
 
+            String webhk = props.getProperty("webhook");
+            if(webhk != null && !webhk.isEmpty()) {
+                webhook = webhk;
+            } else {
+                LOGGER.warn("No url for webhooks, not going to use them");
+            }
+
         } catch (IOException e) {
             props.setProperty("token", token);
             props.setProperty("url", url);
+            props.setProperty("webhook", webhook);
             try {
                 props.store(new FileWriter(configPath), "URL is where wanotifier service is running (don't forget trailing slash!!), token is self-explanatory");
             } catch (IOException ex) {
@@ -110,20 +146,28 @@ public class WaNotifierFabric implements ModInitializer {
 
         ServerPlayConnectionEvents.JOIN.register((ServerPlayNetworkHandler handler, PacketSender sender, MinecraftServer server) -> {
             ServerPlayerEntity player = handler.player;
-            String params = "&joined=" + player.getName().getLiteralString();
-            doRequest(EventType.JOIN, params, server);
+            Events.Join join = new Events.Join(player.getName().getLiteralString());
+            doRequest(join, server);
+            if(!webhook.isEmpty()) {
+                doWebhook(join);
+            }
         });
 
         ServerPlayConnectionEvents.DISCONNECT.register((ServerPlayNetworkHandler handler, MinecraftServer server) -> {
             ServerPlayerEntity player = handler.player;
-            String params = "&duration=sconosciuto" + "&joined=" + player.getName().getLiteralString();
-            doRequest(EventType.QUIT, params, server);
+            Events.Disconnect disconnect = new Events.Disconnect(player.getName().getLiteralString());
+            doRequest(disconnect, server);
+            if(!webhook.isEmpty()) {
+                doWebhook(disconnect);
+            }
         });
 
         ServerMessageEvents.CHAT_MESSAGE.register((SignedMessage message, ServerPlayerEntity sender, MessageType.Parameters params)->{
-            String encoded_message = URLEncoder.encode(Objects.requireNonNull(message.getContent().getLiteralString()), StandardCharsets.UTF_8);
-            String param = "&message="+ encoded_message + "&author=" + sender.getName().getLiteralString();
-            doRequest(EventType.CHAT, param, sender.server);
+            Events.Chat chat = new Events.Chat(sender.getName().getLiteralString(), Objects.requireNonNull(message.getContent().getLiteralString()));
+            doRequest(chat, sender.server);
+            if(!webhook.isEmpty()) {
+                doWebhook(chat);
+            }
         });
     }
 }
