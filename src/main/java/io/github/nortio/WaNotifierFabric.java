@@ -42,12 +42,6 @@ public class WaNotifierFabric implements ModInitializer {
     private static String url = "http://localhost:8000/";
     private static String webhook = "";
 
-    private static final class EventType {
-        public static final String JOIN = "join";
-        public static final String QUIT = "quit";
-        public static final String CHAT = "chat";
-    }
-
     private void broadcast(String message, MinecraftServer server) {
         server.getPlayerManager().broadcast(Text.literal(message), false);
     }
